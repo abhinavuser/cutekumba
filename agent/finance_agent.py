@@ -27,11 +27,16 @@ import time
 import random
 
 class FinanceAgent:
-    def __init__(self):
+    def __init__(self, llm: Optional[Any] = None):
         self.db = DatabaseManager()
-        self.llm: LLMInterface = MockLLM()
+        # Allow injection of an LLM for testing; fallback to MockLLM
+        if llm is not None:
+            self.llm = llm
+        else:
+            self.llm: LLMInterface = MockLLM()
+
         # Only try to wire real LLM/embeddings if langchain is available
-        if _HAS_LANGCHAIN:
+        if _HAS_LANGCHAIN and getattr(self, "llm", None) is None:
             try:
                 self.setup_llm()
             except Exception as e:
@@ -438,14 +443,50 @@ class FinanceAgent:
             # Get market data
             market_data = self.get_market_data()
             
-            # Process through LLM with enhanced context
-            response = self.chain.invoke({
-                "query": query,
-                "current_time": current_time,
-                "user_data": json.dumps(user_data, default=str),
-                "market_data": json.dumps(market_data, default=str),
-                "chat_history": "\n".join(self._chat_history[-5:])
-            })
+            # Build context for prompt
+            prompt_context = (
+                f"Current Time: {current_time}\n"
+                f"User Data: {json.dumps(user_data, default=str)}\n"
+                f"Market Data: {json.dumps(market_data, default=str)}\n"
+                f"Recent Chat: {'\\n'.join(self._chat_history[-5:])}\n"
+                f"User Query: {query}"
+            )
+
+            # Process through LLM or chain with enhanced context
+            if getattr(self, 'chain', None):
+                try:
+                    response = self.chain.invoke({
+                        "query": query,
+                        "current_time": current_time,
+                        "user_data": json.dumps(user_data, default=str),
+                        "market_data": json.dumps(market_data, default=str),
+                        "chat_history": "\n".join(self._chat_history[-5:])
+                    })
+                except Exception as e:
+                    print(f"Chain invoke failed, falling back to llm.generate: {e}")
+                    response = self.llm.generate(prompt_context)
+            else:
+                # Use LLM.generate interface for our MockLLM or injected LLM
+                response = self.llm.generate(prompt_context)
+
+            # If LLM returned JSON-like structured string, try to parse it
+            parsed_operation = None
+            try:
+                parsed = json.loads(response)
+                if isinstance(parsed, dict) and 'type' in parsed:
+                    parsed_operation = parsed
+            except Exception:
+                parsed_operation = None
+
+            # If the LLM requested a structured operation that requires confirmation,
+            # save it as pending and return the natural response
+            if parsed_operation:
+                if parsed_operation.get('requires_confirmation'):
+                    self._pending_operation = parsed_operation
+                    return parsed_operation.get('natural_response', str(response))
+                else:
+                    # Execute immediately
+                    return self._execute_operation(parsed_operation)
             
             # Save chat history
             if self._current_user:
@@ -524,47 +565,29 @@ class FinanceAgent:
         try:
             if not self._current_user:
                 return "❌ Please log in to execute trades."
+            text = query.strip()
+            lowered = text.lower()
+            action = 'BUY' if 'buy' in lowered else 'SELL'
 
-            words = query.lower().split()
-            action = 'BUY' if 'buy' in words else 'SELL'
-            symbol_idx = words.index('buy' if 'buy' in words else 'sell') + 1
-            
-            # Extract symbol and shares
-            shares = None
+            # Heuristic parsing: find first symbol-like token (letters, length 1-6)
             symbol = None
-            
-            # Define supported symbols
-            SUPPORTED_SYMBOLS = {
-                # Technology
-                'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'AMD', 'INTC', 'CSCO',
-                # Financial
-                'JPM', 'BAC', 'GS', 'V', 'MA',
-                # Consumer
-                'WMT', 'COST', 'PG', 'KO', 'PEP', 'MCD',
-                # Entertainment
-                'DIS', 'NFLX',
-                # Other sectors
-                'TSLA', 'F', 'GM', 'GE', 'XOM', 'CVX', 'T', 'VZ'
-            }
-            
-            # Parse query for shares and symbol
-            for word in words[symbol_idx:]:
-                if word.isdigit():
-                    shares = int(word)
-                elif word.upper() in SUPPORTED_SYMBOLS:
-                    symbol = word.upper()
+            shares = None
+            tokens = re.findall(r"\b[A-Za-z.]{1,6}\b", text)
+            for tok in tokens:
+                up = tok.upper()
+                if up not in ['BUY', 'SELL', 'SHARES', 'OF', 'TO']:
+                    symbol = up
+                    break
+
+            num_match = re.search(r"\b(\d+)\b", text)
+            if num_match:
+                shares = int(num_match.group(1))
             
             if not symbol:
-                return (
-                    "❌ Invalid or missing stock symbol.\n"
-                    "Use 'symbols' command to see supported stocks."
-                )
+                return "❌ Invalid or missing stock symbol. Please specify a valid ticker like AAPL."
                 
             if not shares:
-                return (
-                    "❌ Please specify the number of shares.\n"
-                    f"Example: {action.lower()} {symbol} 10"
-                )
+                return f"❌ Please specify the number of shares. Example: {action.lower()} {symbol} 10"
             
             if shares <= 0:
                 return "❌ Number of shares must be positive."

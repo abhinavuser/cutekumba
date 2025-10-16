@@ -34,42 +34,24 @@ class DatabaseManager:
 
     def execute_query(self, query: str, parameters: Any = None, fetch: bool = True) -> Optional[List[Dict]]:
         """Execute a database query with proper error handling and connection management."""
-        conn = None
-        cur = None
         try:
-            # Debug print
-            print(f"\nExecuting query: {query}")
-            print(f"With parameters: {parameters}")
-            
-            conn = self.get_connection()
-            cur = conn.cursor()
-            
-            cur.execute(query, parameters)
-            
-            # Always commit for INSERT/UPDATE/DELETE operations
-            if not fetch:
-                conn.commit()
-                results = {"affected_rows": cur.rowcount}
-                print(f"Affected rows: {cur.rowcount}")
-            else:
-                # For SELECT operations
-                results = cur.fetchall()
-                # Still commit to ensure any prior operations are visible
-                conn.commit()
-                print(f"Query results: {results}")
+            # Debug print (can be removed or toggled by a debug flag)
+            # print(f"\nExecuting query: {query}")
+            # print(f"With parameters: {parameters}")
 
-            return results
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(query, parameters)
+                    if fetch:
+                        results = cur.fetchall()
+                        return results
+                    else:
+                        conn.commit()
+                        return {"affected_rows": cur.rowcount}
 
         except Exception as e:
-            if conn:
-                conn.rollback()
-            print(f"Query execution error: {str(e)}")
+            # For library callers, raise with a clear message
             raise Exception(f"Query execution error: {str(e)}")
-        finally:
-            if cur:
-                cur.close()
-            if conn:
-                conn.close()
 
     def create_user(self, data: Dict) -> Dict:
         """Create a new user account with validation."""
@@ -87,40 +69,34 @@ class DatabaseManager:
             salt = bcrypt.gensalt()
             hashed_password = bcrypt.hashpw(data['password'].encode('utf-8'), salt)
             
-            conn = self.get_connection()
-            cur = conn.cursor()
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    # First check if user already exists
+                    cur.execute("SELECT email FROM users WHERE email = %s", (data['email'],))
+                    if cur.fetchone():
+                        raise ValueError("User with this email already exists")
 
-            # First check if user already exists
-            cur.execute("SELECT email FROM users WHERE email = %s", (data['email'],))
-            if cur.fetchone():
-                raise ValueError("User with this email already exists")
+                    query = """
+                        INSERT INTO users (account_number, email, password, balance)
+                        VALUES (%s, %s, %s, %s)
+                        RETURNING id, account_number, email, balance, created_at
+                    """
 
-            query = """
-                INSERT INTO users (account_number, email, password, balance)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id, account_number, email, balance, created_at
-            """
-            
-            print(f"Executing query with account_number: {data['account_number']}, email: {data['email']}")
-            
-            cur.execute(query, (
-                data['account_number'], 
-                data['email'], 
-                hashed_password.decode('utf-8'),
-                data.get('balance', 0.00)
-            ))
-            
-            result = cur.fetchone()
-            # Explicitly commit the transaction
-            conn.commit()
-            
-            print(f"Query result: {result}")
-            
-            return {
-                "status": "success",
-                "message": f"Account created successfully with number {result['account_number']}",
-                "data": result
-            }
+                    cur.execute(query, (
+                        data['account_number'],
+                        data['email'],
+                        hashed_password.decode('utf-8'),
+                        data.get('balance', 0.00)
+                    ))
+
+                    result = cur.fetchone()
+                    conn.commit()
+
+                    return {
+                        "status": "success",
+                        "message": f"Account created successfully with number {result['account_number']}",
+                        "data": result
+                    }
         except Exception as e:
             if conn:
                 conn.rollback()
@@ -136,51 +112,36 @@ class DatabaseManager:
         try:
             print(f"\nAttempting login for email: {email}")
             
-            conn = self.get_connection()
-            cur = conn.cursor()
-
             query = """
                 SELECT id, account_number, email, password, balance 
                 FROM users 
                 WHERE email = %s
             """
-            
-            print(f"Executing login query for email: {email}")
-            
-            cur.execute(query, (email,))
-            result = cur.fetchone()  # Use fetchone instead of fetchall
-            
-            print(f"Login query result: {result}")
-            
-            if not result:
-                print(f"No user found with email: {email}")
-                return {"status": "error", "message": "Invalid email or password"}
-            
-            # Convert RealDictRow to regular dict if needed
-            user = dict(result) if result else None
-            
-            print(f"Found user: {user['email']}")
-            print(f"Comparing passwords...")
-            
-            stored_password = user['password']
-            if bcrypt.checkpw(password.encode('utf-8'), stored_password.encode('utf-8')):
-                print("Password verified successfully")
-                
-                # Update last login
-                cur.execute(
-                    "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s",
-                    (user['id'],)
-                )
-                conn.commit()
-                
-                return {"status": "success", "data": {
-                    "account_number": user['account_number'],
-                    "email": user['email'],
-                    "balance": user['balance']
-                }}
-            
-            print("Password verification failed")
-            return {"status": "error", "message": "Invalid email or password"}
+
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(query, (email,))
+                    result = cur.fetchone()
+
+                    if not result:
+                        return {"status": "error", "message": "Invalid email or password"}
+
+                    user = dict(result)
+                    stored_password = user['password']
+                    if bcrypt.checkpw(password.encode('utf-8'), stored_password.encode('utf-8')):
+                        # Update last login
+                        cur.execute(
+                            "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s",
+                            (user['id'],)
+                        )
+                        conn.commit()
+                        return {"status": "success", "data": {
+                            "account_number": user['account_number'],
+                            "email": user['email'],
+                            "balance": user['balance']
+                        }}
+
+                    return {"status": "error", "message": "Invalid email or password"}
         
         except Exception as e:
             if conn:
@@ -230,7 +191,7 @@ class DatabaseManager:
                             "price": info.get('regularMarketPrice', 0.0),
                             "change": info.get('regularMarketChangePercent', 0.0),
                             "volume": info.get('regularMarketVolume', 0),
-                            "timestamp": datetime.now()
+                            "timestamp": datetime.now().isoformat()
                         }
                         
                         # Cache the result
@@ -256,138 +217,64 @@ class DatabaseManager:
                     "price": 169.50,  # Default price for testing
                     "change": 0.0,
                     "volume": 0,
-                    "timestamp": datetime.now(),
+                    "timestamp": datetime.now().isoformat(),
                     "error": str(e)
                 }
 
     def execute_trade(self, account_number: str, trade_type: str, 
                      symbol: str, shares: int, price: float) -> Dict:
         """Execute a stock trade with proper validation and error handling."""
-        conn = None
         try:
-            conn = self.get_connection()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
-            
-            # Start transaction
-            cur.execute("BEGIN")
-            
-            # Calculate total amount (use float for calculation, then convert to Decimal)
             total_amount = float(shares) * float(price)
-            
-            # Get current position
-            cur.execute("""
-                SELECT SUM(shares) as total_shares
-                FROM portfolio 
-                WHERE account_number = %s AND stock_symbol = %s
-            """, (account_number, symbol))
-            
-            position = cur.fetchone()
-            current_shares = int(position['total_shares'] if position and position['total_shares'] else 0)
-            
-            # Validate trade
-            if trade_type == 'SELL' and current_shares < shares:
-                raise ValueError(
-                    f"Insufficient shares for this trade.\n"
-                    f"Required: {shares} shares\n"
-                    f"Available: {current_shares} shares"
-                )
-            
-            # Get and verify user balance
-            cur.execute(
-                "SELECT balance FROM users WHERE account_number = %s FOR UPDATE",
-                (account_number,)
-            )
-            user = cur.fetchone()
-            
-            if not user:
-                raise ValueError("Account not found")
-            
-            current_balance = float(user['balance'])
-            
-            if trade_type == 'BUY' and current_balance < total_amount:
-                raise ValueError(
-                    f"Insufficient funds for this trade.\n"
-                    f"Required: ${total_amount:.2f}\n"
-                    f"Available: ${current_balance:.2f}"
-                )
-            
-            # Execute trade
-            if trade_type == 'BUY':
-                # Update balance
-                cur.execute(
-                    "UPDATE users SET balance = balance - %s WHERE account_number = %s",
-                    (total_amount, account_number)
-                )
-                
-                # Update portfolio
-                if current_shares > 0:
-                    # Update existing position
-                    cur.execute("""
-                        UPDATE portfolio 
-                        SET shares = shares + %s,
-                            average_price = (average_price * shares + %s) / (shares + %s),
-                            last_updated = CURRENT_TIMESTAMP
-                        WHERE account_number = %s AND stock_symbol = %s
-                    """, (shares, total_amount, shares, account_number, symbol))
-                else:
-                    # Insert new position
-                    cur.execute("""
-                        INSERT INTO portfolio 
-                        (account_number, stock_symbol, shares, average_price)
-                        VALUES (%s, %s, %s, %s)
-                    """, (account_number, symbol, shares, price))
-            
-            else:  # SELL
-                # Update balance
-                cur.execute(
-                    "UPDATE users SET balance = balance + %s WHERE account_number = %s",
-                    (total_amount, account_number)
-                )
-                
-                # Update portfolio
-                cur.execute("""
-                    UPDATE portfolio 
-                    SET shares = shares - %s,
-                        last_updated = CURRENT_TIMESTAMP
-                    WHERE account_number = %s AND stock_symbol = %s
-                """, (shares, account_number, symbol))
-                
-                # Clean up zero positions
-                cur.execute("""
-                    DELETE FROM portfolio 
-                    WHERE account_number = %s AND stock_symbol = %s AND shares <= 0
-                """, (account_number, symbol))
-            
-            # Record transaction
-            cur.execute("""
-                INSERT INTO transactions 
-                (account_number, transaction_type, stock_symbol, shares, 
-                 price_per_share, total_amount)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING transaction_id
-            """, (account_number, trade_type, symbol, shares, price, total_amount))
-            
-            transaction = cur.fetchone()
-            
-            # Commit transaction
-            cur.execute("COMMIT")
-            
-            return {
-                "status": "success",
-                "message": (
-                    f"Successfully {trade_type.lower()}ed {shares} shares of {symbol} "
-                    f"at ${price:.2f} per share"
-                ),
-                "transaction_id": transaction['transaction_id']
-            }
-            
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    # Lock user's balance row
+                    cur.execute("SELECT balance FROM users WHERE account_number = %s FOR UPDATE", (account_number,))
+                    user = cur.fetchone()
+                    if not user:
+                        raise ValueError("Account not found")
+
+                    # Calculate current holdings
+                    cur.execute("SELECT SUM(shares) as total_shares FROM portfolio WHERE account_number = %s AND stock_symbol = %s", (account_number, symbol))
+                    position = cur.fetchone()
+                    current_shares = int(position['total_shares']) if position and position['total_shares'] else 0
+
+                    if trade_type == 'SELL' and current_shares < shares:
+                        raise ValueError(f"Insufficient shares for this trade. Required: {shares}, Available: {current_shares}")
+
+                    current_balance = float(user['balance'])
+                    if trade_type == 'BUY' and current_balance < total_amount:
+                        raise ValueError(f"Insufficient funds for this trade. Required: ${total_amount:.2f}, Available: ${current_balance:.2f}")
+
+                    # Perform updates
+                    if trade_type == 'BUY':
+                        cur.execute("UPDATE users SET balance = balance - %s WHERE account_number = %s", (total_amount, account_number))
+                        if current_shares > 0:
+                            # Update average price correctly
+                            cur.execute("SELECT shares, average_price FROM portfolio WHERE account_number = %s AND stock_symbol = %s", (account_number, symbol))
+                            existing = cur.fetchone()
+                            if existing:
+                                existing_shares = float(existing['shares'])
+                                existing_avg = float(existing['average_price'])
+                                new_avg = ((existing_avg * existing_shares) + (price * shares)) / (existing_shares + shares)
+                                cur.execute("UPDATE portfolio SET shares = shares + %s, average_price = %s, last_updated = CURRENT_TIMESTAMP WHERE account_number = %s AND stock_symbol = %s", (shares, new_avg, account_number, symbol))
+                        else:
+                            cur.execute("INSERT INTO portfolio (account_number, stock_symbol, shares, average_price) VALUES (%s, %s, %s, %s)", (account_number, symbol, shares, price))
+
+                    else:  # SELL
+                        cur.execute("UPDATE users SET balance = balance + %s WHERE account_number = %s", (total_amount, account_number))
+                        cur.execute("UPDATE portfolio SET shares = shares - %s, last_updated = CURRENT_TIMESTAMP WHERE account_number = %s AND stock_symbol = %s", (shares, account_number, symbol))
+                        cur.execute("DELETE FROM portfolio WHERE account_number = %s AND stock_symbol = %s AND shares <= 0", (account_number, symbol))
+
+                    cur.execute("INSERT INTO transactions (account_number, transaction_type, stock_symbol, shares, price_per_share, total_amount) VALUES (%s, %s, %s, %s, %s, %s) RETURNING transaction_id", (account_number, trade_type, symbol, shares, price, total_amount))
+                    transaction = cur.fetchone()
+                    conn.commit()
+
+                    return {"status": "success", "message": f"Successfully {trade_type.lower()}ed {shares} shares of {symbol} at ${price:.2f} per share", "transaction_id": transaction['transaction_id']}
+
         except Exception as e:
-            if conn:
-                cur.execute("ROLLBACK")
+            # Bubble up an error as structured response
             return {"status": "error", "message": str(e)}
-        finally:
-            if conn:
-                conn.close()
                 
     def get_portfolio(self, account_number: str) -> List[Dict]:
         """Get user's consolidated portfolio with current market values."""
@@ -595,3 +482,71 @@ class DatabaseManager:
         except Exception as e:
             print(f"Error getting watchlist: {e}")
             return []
+
+    def init_db(self) -> None:
+        """Initialize database schema required by the application.
+
+        This will create tables if they do not exist. Intended for development
+        use; in production use proper migrations.
+        """
+        create_statements = [
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                account_number VARCHAR(64) UNIQUE NOT NULL,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                balance NUMERIC DEFAULT 0,
+                last_login TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS portfolio (
+                id SERIAL PRIMARY KEY,
+                account_number VARCHAR(64) REFERENCES users(account_number),
+                stock_symbol VARCHAR(16) NOT NULL,
+                shares NUMERIC NOT NULL,
+                average_price NUMERIC NOT NULL,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS transactions (
+                transaction_id SERIAL PRIMARY KEY,
+                account_number VARCHAR(64) REFERENCES users(account_number),
+                transaction_type VARCHAR(16),
+                stock_symbol VARCHAR(16),
+                shares NUMERIC,
+                price_per_share NUMERIC,
+                total_amount NUMERIC,
+                transaction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id SERIAL PRIMARY KEY,
+                account_number VARCHAR(64) REFERENCES users(account_number),
+                stock_symbol VARCHAR(16) NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id SERIAL PRIMARY KEY,
+                account_number VARCHAR(64) REFERENCES users(account_number),
+                message_type VARCHAR(32),
+                message TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        ]
+
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    for stmt in create_statements:
+                        cur.execute(stmt)
+                conn.commit()
+            print("Database schema initialized (or already present).")
+        except Exception as e:
+            raise Exception(f"Error initializing DB schema: {e}")
