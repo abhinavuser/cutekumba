@@ -467,38 +467,7 @@ class DatabaseManager:
             print(f"Error fetching portfolio: {e}")
             return []
 
-    def add_to_watchlist(self, account_number: str, symbol: str) -> Dict:
-        """Add a stock to user's watchlist."""
-        try:
-            query = """
-                INSERT INTO watchlist (account_number, stock_symbol)
-                VALUES (%s, %s)
-                ON CONFLICT (account_number, stock_symbol) DO NOTHING
-                RETURNING id
-            """
-            result = self.execute_query(query, (account_number, symbol))
-            return {
-                "status": "success",
-                "message": f"Added {symbol} to watchlist"
-            }
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-
-    def get_watchlist(self, account_number: str) -> List[Dict]:
-        """Get user's watchlist with current prices."""
-        try:
-            query = "SELECT * FROM watchlist WHERE account_number = %s"
-            watchlist = self.execute_query(query, (account_number,))
-            
-            # Enrich with current market prices
-            for item in watchlist:
-                quote = self.get_real_time_quote(item['stock_symbol'])
-                item.update(quote)
-            
-            return watchlist
-        except Exception as e:
-            print(f"Error fetching watchlist: {e}")
-            return []
+    
 
     def save_chat_message(self, account_number: str, message_type: str, message: str) -> None:
         """Save chat message to history."""
@@ -607,12 +576,22 @@ class DatabaseManager:
         try:
             with self.get_connection() as conn:
                 cur = conn.cursor(cursor_factory=RealDictCursor)
-                
+
                 cur.execute(
                     "SELECT * FROM watchlist WHERE account_number = %s",
                     (account_number,)
                 )
-                return cur.fetchall()
+                watchlist = cur.fetchall()
+
+            # Enrich with current market prices
+            for item in watchlist:
+                try:
+                    quote = self.get_real_time_quote(item['stock_symbol'])
+                    item.update(quote)
+                except Exception:
+                    pass
+
+            return watchlist
         except Exception as e:
             print(f"Error getting watchlist: {e}")
             return []

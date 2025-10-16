@@ -2,14 +2,21 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, UTC
 import json
 import re
-from langchain_community.llms import Ollama
-from langchain.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_community.embeddings import OllamaEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chains import RetrievalQA
-from src.database.database_manager import DatabaseManager
+try:
+    from langchain_community.llms import Ollama  # type: ignore
+    from langchain.prompts import PromptTemplate  # type: ignore
+    from langchain_core.output_parsers import StrOutputParser  # type: ignore
+    from langchain_community.embeddings import OllamaEmbeddings  # type: ignore
+    from langchain_community.vectorstores import FAISS  # type: ignore
+    from langchain.text_splitter import RecursiveCharacterTextSplitter  # type: ignore
+    from langchain.chains import RetrievalQA  # type: ignore
+    _HAS_LANGCHAIN = True
+except Exception:
+    # LangChain / Ollama not available in the environment. We'll fallback to
+    # a simple MockLLM and skip embeddings/vectorstore features.
+    _HAS_LANGCHAIN = False
+from database.database_manager import DatabaseManager
+from agent.llm import MockLLM, LLMInterface
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -22,10 +29,28 @@ import random
 class FinanceAgent:
     def __init__(self):
         self.db = DatabaseManager()
-        self.setup_llm()
-        self.setup_embeddings()
-        self.setup_vector_store()
-        self.setup_prompts()
+        self.llm: LLMInterface = MockLLM()
+        # Only try to wire real LLM/embeddings if langchain is available
+        if _HAS_LANGCHAIN:
+            try:
+                self.setup_llm()
+            except Exception as e:
+                print(f"Could not initialize Ollama LLM, falling back to MockLLM: {e}")
+
+            try:
+                self.setup_embeddings()
+                self.setup_vector_store()
+            except Exception as e:
+                print(f"Embeddings/Vector store unavailable: {e}")
+
+            try:
+                self.setup_prompts()
+            except Exception as e:
+                print(f"Could not setup prompts/chain: {e}")
+        else:
+            # Keep prompt/chain None when not available
+            self.prompt = None
+            self.chain = None
         self._pending_operation = None
         self._chat_history = []
         self._current_user = None
@@ -34,14 +59,16 @@ class FinanceAgent:
 
     def setup_llm(self):
         """Setup the LLM with appropriate parameters."""
+        # Create Ollama-backed LLM and wrap to satisfy LLMInterface via duck typing
         self.llm = Ollama(
-            model="llama2:7b",  # Using a smaller 7B model
-            temperature=0.3,  # Lower temperature for more consistent responses
+            model="llama2:7b",
+            temperature=0.3,
             base_url="http://localhost:11434"
         )
 
     def setup_embeddings(self):
         """Setup embeddings for RAG."""
+        # Note: embeddings may be heavy; only initialize when available
         self.embeddings = OllamaEmbeddings(
             model="llama2:13b",
             base_url="http://localhost:11434"
@@ -168,11 +195,16 @@ class FinanceAgent:
             """
         )
 
-        self.chain = (
-            self.prompt 
-            | self.llm 
-            | StrOutputParser()
-        )
+        # In langchain-enabled environments you can wire up a chain. If not
+        # available we'll fallback to using llm.generate(prompt) directly.
+        if _HAS_LANGCHAIN:
+            self.chain = (
+                self.prompt 
+                | self.llm 
+                | StrOutputParser()
+            )
+        else:
+            self.chain = None
 
     def get_market_data(self, symbols: List[str] = None) -> Dict:
         """Fetch comprehensive market data including indices, trends, and news."""

@@ -2,8 +2,8 @@ from typing import Optional
 import os
 from datetime import datetime, UTC
 import time
-from src.agent.finance_agent import FinanceAgent
-from src.database.database_manager import DatabaseManager
+from agent.finance_agent import FinanceAgent
+from database.database_manager import DatabaseManager
 
 class FinanceAgentTester:
     def __init__(self):
