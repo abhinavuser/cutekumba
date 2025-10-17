@@ -6,8 +6,9 @@ from agent.finance_agent import FinanceAgent
 from database.database_manager import DatabaseManager
 
 class FinanceAgentTester:
-    def __init__(self):
-        self.agent = FinanceAgent()
+    def __init__(self, agent: Optional[FinanceAgent] = None):
+        # Accept an injected FinanceAgent for flexibility (Ollama-backed or mock)
+        self.agent = agent or FinanceAgent()
         self.db = DatabaseManager()
         self.current_user: Optional[str] = None
         self.clear_screen()

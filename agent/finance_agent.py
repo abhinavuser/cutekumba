@@ -18,9 +18,10 @@ except Exception:
 from database.database_manager import DatabaseManager
 from agent.llm import MockLLM, LLMInterface
 import yfinance as yf
-import pandas as pd
-import numpy as np
-from sklearn.preprocessing import MinMaxScaler
+import requests
+from bs4 import BeautifulSoup
+import time
+import random
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -29,11 +30,18 @@ import random
 class FinanceAgent:
     def __init__(self, llm: Optional[Any] = None):
         self.db = DatabaseManager()
-        # Allow injection of an LLM for testing; fallback to MockLLM
+        # Allow injection of an LLM for testing; by default try to use Ollama HTTP adapter
         if llm is not None:
             self.llm = llm
         else:
-            self.llm: LLMInterface = MockLLM()
+            # Try Ollama HTTP adapter first
+            try:
+                from agent.llm import OllamaHTTPAdapter
+                import os
+                model = os.getenv('OLLAMA_MODEL')
+                self.llm = OllamaHTTPAdapter(model=model)
+            except Exception:
+                self.llm: LLMInterface = MockLLM()
 
         # Only try to wire real LLM/embeddings if langchain is available
         if _HAS_LANGCHAIN and getattr(self, "llm", None) is None:
@@ -487,6 +495,21 @@ class FinanceAgent:
                 else:
                     # Execute immediately
                     return self._execute_operation(parsed_operation)
+
+            # If the LLM failed or returned an unstructured response, fall back to
+            # lightweight local parsing for common commands (buy/sell/balance/deposit/etc.)
+            if not parsed_operation:
+                try:
+                    sentiment = self.analyze_sentiment(query)
+                    if sentiment.get('action') in ['BUY', 'SELL']:
+                        # Use the local trade handler
+                        return self._handle_trade_command(query)
+                    if sentiment.get('action') == 'CHAT':
+                        # No special handling needed; return LLM response
+                        pass
+                except Exception:
+                    # If analysis fails, continue and return raw response
+                    pass
             
             # Save chat history
             if self._current_user:
@@ -594,8 +617,8 @@ class FinanceAgent:
             
             # Get current price
             quote = self._get_cached_quote(symbol)
-            if not quote or 'price' not in quote:
-                return f"❌ Error: Unable to get quote for {symbol}"
+            if not quote or 'price' not in quote or quote.get('price') in (None, 0):
+                return f"❌ Error: Unable to get valid quote for {symbol}. Try again later."
             
             total_cost = float(quote['price']) * shares
             
@@ -818,10 +841,14 @@ You can also ask questions naturally!
             ]
             
             for pos in portfolio:
-                current_value = float(pos['shares']) * float(pos['current_price'])
-                cost_basis = float(pos['shares']) * float(pos['average_price'])
+                # Protect against missing or zero average_price
+                current_price = float(pos.get('current_price') or 0)
+                avg_price = float(pos.get('average_price') or 0)
+                shares = float(pos['shares'])
+                current_value = shares * current_price
+                cost_basis = shares * avg_price
                 position_pl = current_value - cost_basis
-                pl_percent = (position_pl / cost_basis) * 100
+                pl_percent = (position_pl / cost_basis * 100) if cost_basis != 0 else 0
                 
                 summary.append(
                     f"- {pos['stock_symbol']}: {int(pos['shares'])} shares @ ${float(pos['average_price']):.2f} "
