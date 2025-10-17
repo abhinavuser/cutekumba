@@ -70,6 +70,22 @@ class FinanceAgent:
         self._market_data_cache = {}
         self._cache_timeout = 300  # 5 minutes
 
+    def _safe_float(self, v, default=0.0):
+        try:
+            if v is None:
+                return float(default)
+            return float(v)
+        except Exception:
+            return float(default)
+
+    def _safe_int(self, v, default=0):
+        try:
+            if v is None:
+                return int(default)
+            return int(v)
+        except Exception:
+            return int(default)
+
     def setup_llm(self):
         """Setup the LLM with appropriate parameters."""
         # Create Ollama-backed LLM and wrap to satisfy LLMInterface via duck typing

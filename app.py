@@ -1,3 +1,19 @@
+import sys
+import types
+# Some environments have a broken or partially-installed `torch` package which
+# causes Streamlit's module watcher to inspect torch internals and raise a
+# RuntimeError. To avoid that crash we inject a minimal dummy `torch` module
+# into sys.modules before importing Streamlit. This is safe for this app
+# because we don't use torch directly.
+if 'torch' not in sys.modules:
+    try:
+        _torch_dummy = types.ModuleType('torch')
+        # Provide a minimal attribute so importers that expect a __path__ don't fail
+        _torch_dummy.__path__ = []
+        sys.modules['torch'] = _torch_dummy
+    except Exception:
+        pass
+
 import streamlit as st
 from agent.finance_agent import FinanceAgent
 from agent.llm import OllamaHTTPAdapter, MockLLM
