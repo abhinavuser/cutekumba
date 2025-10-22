@@ -393,7 +393,9 @@ class FinanceAgent:
                     try:
                         quote = self._get_cached_quote(stock)
                         if quote and 'price' in quote:
-                            price = float(quote['price'])
+                            price = self._safe_float(quote.get('price'))
+                            if price == 0:
+                                continue
                             shares = int(amount * 0.2 / price)  # 20% of amount per stock
                             if shares > 0:
                                 recommendations.append({
@@ -450,13 +452,13 @@ class FinanceAgent:
                     user = self.db.get_user(self._current_user)
                     user_data = {
                         "account_number": self._current_user,
-                        "balance": float(user['balance']),
+                        "balance": self._safe_float(user.get('balance')),
                         "portfolio": [
                             {
                                 "symbol": p['stock_symbol'],
                                 "shares": int(p['shares']),
-                                "avg_price": float(p['average_price']),
-                                "current_price": float(p.get('current_price', 0))
+                                "avg_price": self._safe_float(p.get('average_price')),
+                                "current_price": self._safe_float(p.get('current_price', 0))
                             } for p in portfolio
                         ],
                         "watchlist": [w['stock_symbol'] for w in watchlist]
@@ -633,16 +635,16 @@ class FinanceAgent:
             
             # Get current price
             quote = self._get_cached_quote(symbol)
-            if not quote or 'price' not in quote or quote.get('price') in (None, 0):
+            if not quote or 'price' not in quote or self._safe_float(quote.get('price')) == 0:
                 return f"❌ Error: Unable to get valid quote for {symbol}. Try again later."
             
-            total_cost = float(quote['price']) * shares
+            total_cost = self._safe_float(quote.get('price')) * shares
             
             # Verify sufficient balance for buy orders
             if action == 'BUY':
                 try:
                     user = self.db.get_user(self._current_user)
-                    if float(user['balance']) < total_cost:
+                    if self._safe_float(user.get('balance')) < total_cost:
                         return (
                             f"❌ Insufficient funds for this trade.\n"
                             f"Required: ${total_cost:,.2f}\n"
@@ -656,8 +658,8 @@ class FinanceAgent:
                 try:
                     portfolio = self.db.get_portfolio(self._current_user)
                     position = next((pos for pos in portfolio if pos['stock_symbol'] == symbol), None)
-                    if not position or int(position['shares']) < shares:
-                        available = position['shares'] if position else 0
+                    if not position or self._safe_int(position['shares']) < shares:
+                        available = self._safe_int(position['shares']) if position else 0
                         return (
                             f"❌ Insufficient shares for this trade.\n"
                             f"Required: {shares} shares\n"
@@ -670,14 +672,14 @@ class FinanceAgent:
             trade_data = {
                 "type": "trade",
                 "operation": action,
-                "data": {
+                    "data": {
                     "symbol": symbol,
                     "shares": shares,
-                    "price": float(quote['price'])
+                    "price": self._safe_float(quote.get('price'))
                 },
                 "natural_response": (
                     f"Would you like to {action.lower()} {shares} shares of {symbol} "
-                    f"at ${float(quote['price']):.2f} per share?"
+                    f"at ${self._safe_float(quote.get('price')):.2f} per share?"
                 ),
                 "requires_confirmation": True,
                 "show_data": True
@@ -690,10 +692,10 @@ class FinanceAgent:
                 f"💹 {symbol} Trade Confirmation",
                 f"Action: {action}",
                 f"Shares: {shares:,}",
-                f"Price: ${float(quote['price']):.2f}",
+                f"Price: ${self._safe_float(quote.get('price')):.2f}",
                 f"Total {'cost' if action == 'BUY' else 'proceeds'}: ${total_cost:,.2f}",
-                f"Change Today: {float(quote.get('change', 0)):.2f}%",
-                f"Volume: {int(quote.get('volume', 0)):,}",
+                f"Change Today: {self._safe_float(quote.get('change', 0)):.2f}%",
+                f"Volume: {self._safe_int(quote.get('volume', 0)):,}",
                 "",
                 "Please confirm by saying 'yes' or 'confirm'"
             ]
@@ -712,9 +714,9 @@ class FinanceAgent:
             quote = self._get_cached_quote(symbol)
             return (
                 f"\n📈 {symbol} Quote:\n"
-                f"Price: ${float(quote['price']):.2f}\n"
-                f"Change: {float(quote['change']):.2f}%\n"
-                f"Volume: {int(quote['volume']):,}"
+                f"Price: ${self._safe_float(quote.get('price')):.2f}\n"
+                f"Change: {self._safe_float(quote.get('change')):.2f}%\n"
+                f"Volume: {self._safe_int(quote.get('volume')):,}"
             )
         except Exception as e:
             return f"❌ Error getting quote for {symbol}: {str(e)}"
@@ -725,7 +727,7 @@ class FinanceAgent:
             return "Please log in to check your balance."
         try:
             user = self.db.get_user(self._current_user)
-            return f"💰 Current Balance: ${float(user['balance']):,.2f}"
+            return f"💰 Current Balance: ${self._safe_float(user.get('balance')):,.2f}"
         except Exception as e:
             return f"Error getting balance: {str(e)}"
 
