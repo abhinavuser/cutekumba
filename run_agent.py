@@ -1,15 +1,18 @@
-from agent.llm import OllamaAdapter, MockLLM
+from agent.llm import OllamaHTTPAdapter, MockLLM
 from agent.finance_agent import FinanceAgent
 from ui.test_interface import FinanceAgentTester
+import os
 
 
 def main():
-    # Try to use Ollama if available, otherwise fallback to MockLLM
+    # Try to use Ollama HTTP adapter if available, otherwise fallback to MockLLM
+    # This uses the direct HTTP API which doesn't require LangChain
     try:
-        llm = OllamaAdapter()
-        print("Using OllamaAdapter LLM")
+        model = os.getenv('OLLAMA_MODEL')  # Defaults to llama2:latest if not set
+        llm = OllamaHTTPAdapter(model=model)
+        print(f"✅ Using OllamaHTTPAdapter with model: {llm.model}")
     except Exception as e:
-        print(f"OllamaAdapter not available or failed: {e}; falling back to MockLLM")
+        print(f"⚠️ OllamaHTTPAdapter not available or failed: {e}; falling back to MockLLM")
         llm = MockLLM()
 
     agent = FinanceAgent(llm=llm)

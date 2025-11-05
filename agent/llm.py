@@ -80,19 +80,39 @@ class OllamaHTTPAdapter(LLMInterface):
         self.base_url = base_url.rstrip('/')
         # Model name: if not provided, default to llama2:latest (common installation)
         self.model = model or "llama2:latest"
+        
+        # Quick health check - verify Ollama is running
+        try:
+            health_url = f"{self.base_url}/api/tags"
+            resp = self.requests.get(health_url, timeout=5)
+            if resp.status_code == 200:
+                print(f"✅ Ollama is running at {self.base_url}")
+            else:
+                print(f"⚠️ Ollama health check returned status {resp.status_code}")
+        except Exception as e:
+            print(f"⚠️ Could not verify Ollama is running: {e}")
+            print(f"   Make sure Ollama is running: 'ollama serve' or start Ollama service")
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, max_tokens: int = 150) -> str:
         # Use Ollama's standard /api/generate endpoint
+        # IMPORTANT: Limit response length with num_predict to speed up generation
         url = f"{self.base_url}/api/generate"
         payload = {
             "model": self.model,
             "prompt": prompt,
-            "stream": False
+            "stream": False,
+            "num_predict": max_tokens,  # Limit response length - critical for speed!
+            "num_ctx": 2048,  # Limit context window to reduce processing time
+            "temperature": 0.7,  # Lower temp = faster, more deterministic
         }
 
         try:
-            resp = self.requests.post(url, json=payload, timeout=30)
+            # Reduced timeout - with max_tokens limit, responses should be much faster
+            # First load still takes time, but subsequent requests should be quick
+            print(f"🔄 Sending request to Ollama (model: {self.model})...")
+            resp = self.requests.post(url, json=payload, timeout=60)
             resp.raise_for_status()
+            print("✅ Received response from Ollama")
             
             try:
                 data = resp.json()
@@ -129,7 +149,12 @@ class OllamaHTTPAdapter(LLMInterface):
             )
         except self.requests.exceptions.Timeout as e:
             raise RuntimeError(
-                f"Request to Ollama timed out. The model might be loading or too slow. Error: {e}"
+                f"Request to Ollama timed out after 60 seconds. "
+                f"This usually means:\n"
+                f"1. The model '{self.model}' is loading for the first time (wait 30-60 seconds, then retry)\n"
+                f"2. Your system is under heavy load\n\n"
+                f"Tip: After the first request, subsequent requests should be much faster (5-10 seconds).\n"
+                f"Error: {e}"
             )
         except self.requests.exceptions.HTTPError as e:
             if resp.status_code == 404:

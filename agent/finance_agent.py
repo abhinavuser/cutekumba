@@ -476,17 +476,36 @@ class FinanceAgent:
                 except Exception as e:
                     print(f"Error getting user data: {e}")
 
-            # Get market data
-            market_data = self.get_market_data()
+            # STRATEGY: Use minimal prompts for ALL queries to maximize speed
+            # Full context is too slow - keep it simple and fast
+            query_lower = query.lower().strip()
             
-            # Build context for prompt
-            prompt_context = (
-                f"Current Time: {current_time}\n"
-                f"User Data: {json.dumps(user_data, default=str)}\n"
-                f"Market Data: {json.dumps(market_data, default=str)}\n"
-                f"Recent Chat: {'\\n'.join(self._chat_history[-5:])}\n"
-                f"User Query: {query}"
+            # Detect if this is a simple casual query
+            is_casual_query = (
+                query_lower in ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening'] or
+                query_lower.startswith('hello') or query_lower.startswith('hi ') or
+                query_lower.startswith('hey ') or len(query.split()) <= 3
             )
+            
+            # For ALL queries, use minimal context to speed up response
+            # Include only essential info: balance, portfolio summary, and the query
+            if is_casual_query:
+                prompt_context = f"You are a friendly AI financial assistant. User: {query}\nRespond naturally and briefly (2-3 sentences max)."
+            else:
+                # For financial queries, include minimal essential context only
+                # Skip heavy market data - just user info
+                portfolio_summary = ""
+                if user_data.get('portfolio'):
+                    positions = [f"{p['symbol']}: {p['shares']} shares" for p in user_data['portfolio'][:3]]
+                    portfolio_summary = f"Portfolio: {', '.join(positions)}. "
+                
+                balance = user_data.get('balance', 0)
+                prompt_context = (
+                    f"You are a financial assistant. "
+                    f"User balance: ${balance:,.2f}. {portfolio_summary}"
+                    f"User query: {query}\n"
+                    f"Respond concisely (3-4 sentences max). Be direct and helpful."
+                )
 
             # Process through LLM or chain with enhanced context
             # Only use LangChain chain if we have one AND we're not using OllamaHTTPAdapter
