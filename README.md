@@ -1,8 +1,8 @@
-# Finance Agent (Local)
+# Finance Agent 
 
-This project is a local financial agent that can answer questions, manage user accounts, and execute mock trades using a local LLM (Ollama) or a mock LLM for testing.
+This project is a financial agent that can answer questions, manage user accounts, and execute mock trades using a local LLM (Ollama) or a mock LLM for testing.
 
-Quick start (recommended using SQLite fallback):
+Quick start:
 
 1. Create and activate virtualenv
 
@@ -24,10 +24,10 @@ pip install -r requirements.txt
 python run_init_db.py
 ```
 
-4. Run the smoke test
+4. Run the agent
 
 ```powershell
-python run_smoke_test.py
+python run_agent.py
 ```
 
 5. Run the Streamlit UI
@@ -44,7 +44,3 @@ Inspecting the DB
 -----------------
 The SQLite file is `ai_project_data.sqlite3`. You can inspect it with `sqlite3` in PowerShell or use a GUI tool like DB Browser for SQLite.
 
-Security & Notes
-----------------
-- This is a demo. Do not use the mock LLM or SQLite for production.
-- Review the code before connecting real brokerage or executing real trades.
