@@ -40,11 +40,19 @@ class FinanceAgent:
                 import os
                 model = os.getenv('OLLAMA_MODEL')
                 self.llm = OllamaHTTPAdapter(model=model)
-            except Exception:
+                print(f"✅ Using OllamaHTTPAdapter with model: {self.llm.model}")
+            except Exception as e:
+                print(f"⚠️ OllamaHTTPAdapter failed, using MockLLM: {e}")
                 self.llm: LLMInterface = MockLLM()
 
-        # Only try to wire real LLM/embeddings if langchain is available
-        if _HAS_LANGCHAIN and getattr(self, "llm", None) is None:
+        # Only try to wire real LLM/embeddings if langchain is available AND we don't have an HTTP adapter
+        # OllamaHTTPAdapter works directly without LangChain chains
+        # Check if we're using OllamaHTTPAdapter
+        from agent.llm import OllamaHTTPAdapter
+        is_http_adapter = isinstance(self.llm, OllamaHTTPAdapter)
+        
+        # Only setup LangChain LLM if we don't already have an LLM (including OllamaHTTPAdapter)
+        if _HAS_LANGCHAIN and getattr(self, "llm", None) is None and not is_http_adapter:
             try:
                 self.setup_llm()
             except Exception as e:
@@ -61,7 +69,7 @@ class FinanceAgent:
             except Exception as e:
                 print(f"Could not setup prompts/chain: {e}")
         else:
-            # Keep prompt/chain None when not available
+            # Keep prompt/chain None when not available or when using HTTP adapter
             self.prompt = None
             self.chain = None
         self._pending_operation = None
@@ -89,8 +97,10 @@ class FinanceAgent:
     def setup_llm(self):
         """Setup the LLM with appropriate parameters."""
         # Create Ollama-backed LLM and wrap to satisfy LLMInterface via duck typing
+        import os
+        model = os.getenv('OLLAMA_MODEL', 'llama2:latest')  # Default to llama2:latest
         self.llm = Ollama(
-            model="llama2:7b",
+            model=model,
             temperature=0.3,
             base_url="http://localhost:11434"
         )
@@ -479,7 +489,11 @@ class FinanceAgent:
             )
 
             # Process through LLM or chain with enhanced context
-            if getattr(self, 'chain', None):
+            # Only use LangChain chain if we have one AND we're not using OllamaHTTPAdapter
+            from agent.llm import OllamaHTTPAdapter
+            is_http_adapter = isinstance(self.llm, OllamaHTTPAdapter)
+            
+            if getattr(self, 'chain', None) and not is_http_adapter:
                 try:
                     response = self.chain.invoke({
                         "query": query,
@@ -493,7 +507,24 @@ class FinanceAgent:
                     response = self.llm.generate(prompt_context)
             else:
                 # Use LLM.generate interface for our MockLLM or injected LLM
-                response = self.llm.generate(prompt_context)
+                try:
+                    response = self.llm.generate(prompt_context)
+                except Exception as e:
+                    # If the external LLM (e.g., local Ollama) fails at runtime
+                    # (connection refused, server stopped), fall back to the
+                    # MockLLM so chat still works. We keep the error message
+                    # for debugging but return a friendly assistant reply.
+                    error_msg = str(e)
+                    print(f"LLM Error: {error_msg}")  # Print to console for debugging
+                    try:
+                        # Lazy import to avoid circular imports at module load
+                        from agent.llm import MockLLM
+                        fallback = MockLLM()
+                        response = fallback.generate(prompt_context)
+                        # Include the actual error in the response so user knows what's wrong
+                        response = f"⚠️ LLM Error: {error_msg}\n\nFalling back to MockLLM:\n{response}"
+                    except Exception:
+                        response = f"I'm having trouble reaching the language model right now. Error: {error_msg}\n\nPlease check:\n1. Is Ollama running? (run 'ollama serve' or start Ollama service)\n2. Is the model '{getattr(self.llm, 'model', 'unknown')}' installed? (run 'ollama list')"
 
             # If LLM returned JSON-like structured string, try to parse it
             parsed_operation = None

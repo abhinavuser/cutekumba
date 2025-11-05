@@ -63,7 +63,8 @@ class OllamaAdapter(LLMInterface):
             # Fallback to string representation
             return str(result)
         except Exception as e:
-            return f"LLM error: {e}"
+            # Raise exceptions so callers can detect failures and fall back
+            raise RuntimeError(f"Ollama/LangChain adapter error: {e}") from e
 
 
 class OllamaHTTPAdapter(LLMInterface):
@@ -77,63 +78,65 @@ class OllamaHTTPAdapter(LLMInterface):
         import requests
         self.requests = requests
         self.base_url = base_url.rstrip('/')
-        # Model name: if not provided, use whatever the user has installed; Ollama API allows sending model in body
-        self.model = model or "llama2:7b"
+        # Model name: if not provided, default to llama2:latest (common installation)
+        self.model = model or "llama2:latest"
 
     def generate(self, prompt: str) -> str:
-        # Try several common Ollama endpoints and shapes. Return the first successful text.
-        endpoints = [
-            (f"{self.base_url}/v1/generate", "json"),
-            (f"{self.base_url}/api/generate", "json"),
-            (f"{self.base_url}/v1/chat/completions", "json"),
-            (f"{self.base_url}/completions", "json"),
-        ]
+        # Use Ollama's standard /api/generate endpoint
+        url = f"{self.base_url}/api/generate"
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False
+        }
 
-        payloads = [
-            {"model": self.model, "prompt": prompt, "max_tokens": 512},
-            {"model": self.model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 512},
-            {"model": self.model, "prompt": prompt, "max_tokens": 512},
-        ]
+        try:
+            resp = self.requests.post(url, json=payload, timeout=30)
+            resp.raise_for_status()
+            
+            try:
+                data = resp.json()
+            except Exception as e:
+                raise RuntimeError(f"Failed to parse JSON response: {e}")
 
-        last_err = None
-        for url, _ in endpoints:
-            for payload in payloads:
-                try:
-                    resp = self.requests.post(url, json=payload, timeout=20)
-                    if resp.status_code >= 500:
-                        last_err = resp
-                        continue
-                    if resp.status_code == 404:
-                        last_err = resp
-                        continue
-                    resp.raise_for_status()
-                    try:
-                        data = resp.json()
-                    except Exception:
-                        return resp.text
+            # Ollama API returns response in 'response' field
+            if isinstance(data, dict):
+                # Check for Ollama's standard response format
+                if 'response' in data and isinstance(data['response'], str):
+                    return data['response']
+                # Fallback to other possible fields
+                if 'text' in data and isinstance(data['text'], str):
+                    return data['text']
+                if 'output' in data and isinstance(data['output'], str):
+                    return data['output']
+                # Check for OpenAI-compatible format
+                choices = data.get('choices')
+                if choices and isinstance(choices, list) and len(choices) > 0:
+                    choice = choices[0]
+                    if isinstance(choice, dict):
+                        msg = choice.get('message') or {}
+                        text = msg.get('content') or choice.get('text')
+                        if text:
+                            return text
 
-                    # Common shapes
-                    # 1) choices -> [ { message: { content } } ]
-                    if isinstance(data, dict):
-                        choices = data.get('choices') or data.get('outputs')
-                        if choices and isinstance(choices, list) and len(choices) > 0:
-                            c = choices[0]
-                            if isinstance(c, dict):
-                                # nested message.content
-                                msg = c.get('message') or {}
-                                text = msg.get('content') or c.get('text') or c.get('content') or c.get('output')
-                                if text:
-                                    return text
-                        # 2) direct text field
-                        if 'text' in data and isinstance(data['text'], str):
-                            return data['text']
-                        if 'output' in data and isinstance(data['output'], str):
-                            return data['output']
+            # If we can't parse it, return the raw text
+            return resp.text
 
-                    # fallback to text
-                    return resp.text
-                except Exception as e:
-                    last_err = e
-                    continue
-
-        return f"LLM HTTP error: {last_err}"
+        except self.requests.exceptions.ConnectionError as e:
+            raise RuntimeError(
+                f"Could not connect to Ollama at {self.base_url}. "
+                f"Make sure Ollama is running. Error: {e}"
+            )
+        except self.requests.exceptions.Timeout as e:
+            raise RuntimeError(
+                f"Request to Ollama timed out. The model might be loading or too slow. Error: {e}"
+            )
+        except self.requests.exceptions.HTTPError as e:
+            if resp.status_code == 404:
+                raise RuntimeError(
+                    f"Model '{self.model}' not found. Available models: run 'ollama list' to see installed models. "
+                    f"HTTP Error: {e}"
+                )
+            raise RuntimeError(f"Ollama HTTP error: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Ollama HTTP adapter error: {e}")
